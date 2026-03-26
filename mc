@@ -171,7 +171,7 @@ cmd_inbox() {
     substr(created_at,1,16) AS at
     FROM messages WHERE $where ORDER BY created_at DESC LIMIT 20;"
   # Auto-mark as read
-  sql "UPDATE messages SET read_at=datetime('now') WHERE to_agent='$AGENT' AND read_at IS NULL;"
+  sql "UPDATE messages SET read_at=datetime('now') WHERE (to_agent='$AGENT' OR to_agent IS NULL) AND read_at IS NULL;"
 }
 
 cmd_fleet() {
