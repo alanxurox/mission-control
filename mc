@@ -12,7 +12,7 @@ R='\033[0;31m' G='\033[0;32m' Y='\033[1;33m' C='\033[0;36m' B='\033[1m' N='\033[
 
 sql() { sqlite3 -batch -separator '|' "$DB" "$1"; }
 sql_col() { sqlite3 -batch -header -column "$DB" "$1"; }
-log_activity() { sql "INSERT INTO activity(agent,action,target_type,target_id,detail) VALUES('$AGENT','$1','$2',$3,'$4');"; }
+log_activity() { sql "INSERT INTO activity(agent,action,target_type,target_id,detail,created_at) VALUES('$AGENT','$1','$2',$3,'$4',datetime('now', 'localtime'));"; }
 
 cmd_init() {
   mkdir -p "$(dirname "$DB")"
