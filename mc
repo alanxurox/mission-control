@@ -12,7 +12,7 @@ R='\033[0;31m' G='\033[0;32m' Y='\033[1;33m' C='\033[0;36m' B='\033[1m' N='\033[
 
 sql() { sqlite3 -batch -separator '|' "$DB" "$1"; }
 sql_col() { sqlite3 -batch -header -column "$DB" "$1"; }
-log_activity() { sql "INSERT INTO activity(agent,action,target_type,target_id,detail) VALUES('$AGENT','$1','$2',$3,'$4');"; }
+log_activity() { sql "INSERT INTO activity(agent,action,target_type,target_id,detail,created_at) VALUES('$AGENT','$1','$2',$3,'$4',datetime('now', 'localtime'));"; }
 
 cmd_init() {
   mkdir -p "$(dirname "$DB")"
@@ -25,7 +25,7 @@ cmd_register() {
   local name="${1:?Usage: mc register <name> [--role role]}" role=""
   shift
   while [[ $# -gt 0 ]]; do case "$1" in --role) role="$2"; shift 2;; *) shift;; esac; done
-  sql "INSERT OR REPLACE INTO agents(name,role,last_seen,status) VALUES('$name','$role',datetime('now'),'idle');"
+  sql "INSERT OR REPLACE INTO agents(name,role,last_seen,status) VALUES('$name','$role',datetime('now', 'localtime'),'idle');"
   log_activity "agent_registered" "agent" 0 "$name ($role)"
   echo -e "${G}Registered${N} $name${role:+ as $role}"
 }
@@ -34,10 +34,10 @@ cmd_checkin() {
   sql "INSERT OR REPLACE INTO agents(name,role,last_seen,status,session_id,registered_at)
     VALUES('$AGENT',
       COALESCE((SELECT role FROM agents WHERE name='$AGENT'),''),
-      datetime('now'),
+      datetime('now', 'localtime'),
       COALESCE((SELECT CASE WHEN (SELECT COUNT(*) FROM tasks WHERE owner='$AGENT' AND status='in_progress')>0 THEN 'busy' ELSE 'idle' END),'idle'),
       COALESCE((SELECT session_id FROM agents WHERE name='$AGENT'),''),
-      COALESCE((SELECT registered_at FROM agents WHERE name='$AGENT'),datetime('now')));"
+      COALESCE((SELECT registered_at FROM agents WHERE name='$AGENT'),datetime('now', 'localtime')));"
   log_activity "checkin" "agent" 0 ""
   # Show unread count
   local unread
@@ -65,7 +65,7 @@ cmd_add() {
   [[ -n "$assignee" ]] && status="claimed"
   local id
   id=$(sql "INSERT INTO tasks(subject,description,status,owner,created_by,priority,claimed_at)
-    VALUES('$(echo "$subject" | sed "s/'/''/g")','$(echo "$desc" | sed "s/'/''/g")','$status','$assignee','$AGENT',$priority,$([ -n "$assignee" ] && echo "datetime('now')" || echo "NULL"))
+    VALUES('$(echo "$subject" | sed "s/'/''/g")','$(echo "$desc" | sed "s/'/''/g")','$status','$assignee','$AGENT',$priority,$([ -n "$assignee" ] && echo "datetime('now', 'localtime')" || echo "NULL"))
     RETURNING id;")
   log_activity "task_created" "task" "$id" "$subject"
   echo -e "${G}#$id${N} $subject${assignee:+ → $assignee}"
@@ -95,14 +95,14 @@ cmd_claim() {
   if [[ -n "$current" && "$current" != "$AGENT" ]]; then
     echo -e "${R}Already claimed by $current${N}"; return 1
   fi
-  sql "UPDATE tasks SET owner='$AGENT', status='claimed', claimed_at=datetime('now'), updated_at=datetime('now') WHERE id=$id;"
+  sql "UPDATE tasks SET owner='$AGENT', status='claimed', claimed_at=datetime('now', 'localtime'), updated_at=datetime('now', 'localtime') WHERE id=$id;"
   log_activity "task_claimed" "task" "$id" ""
   echo -e "${G}Claimed #$id${N}"
 }
 
 cmd_start() {
   local id="${1:?Usage: mc start <id>}"
-  sql "UPDATE tasks SET status='in_progress', updated_at=datetime('now') WHERE id=$id AND owner='$AGENT';"
+  sql "UPDATE tasks SET status='in_progress', updated_at=datetime('now', 'localtime') WHERE id=$id AND owner='$AGENT';"
   sql "UPDATE agents SET status='busy' WHERE name='$AGENT';"
   log_activity "task_started" "task" "$id" ""
   echo -e "${C}▶ Working on #$id${N}"
@@ -112,7 +112,7 @@ cmd_done() {
   local id="${1:?Usage: mc done <id> [-m note]}" note=""
   shift
   while [[ $# -gt 0 ]]; do case "$1" in -m) note="$2"; shift 2;; *) shift;; esac; done
-  sql "UPDATE tasks SET status='done', completed_at=datetime('now'), updated_at=datetime('now') WHERE id=$id;"
+  sql "UPDATE tasks SET status='done', completed_at=datetime('now', 'localtime'), updated_at=datetime('now', 'localtime') WHERE id=$id;"
   sql "UPDATE agents SET status='idle' WHERE name='$AGENT';"
   log_activity "task_completed" "task" "$id" "$(echo "$note" | sed "s/'/''/g")"
   [[ -n "$note" ]] && sql "INSERT INTO messages(from_agent,task_id,body,msg_type) VALUES('$AGENT',$id,'$(echo "$note" | sed "s/'/''/g")','status');"
@@ -124,7 +124,7 @@ cmd_block() {
   shift
   while [[ $# -gt 0 ]]; do case "$1" in --by) by="$2"; shift 2;; *) shift;; esac; done
   [[ -z "$by" ]] && { echo "Usage: mc block <id> --by <other-id>"; return 1; }
-  sql "UPDATE tasks SET status='blocked', updated_at=datetime('now'),
+  sql "UPDATE tasks SET status='blocked', updated_at=datetime('now', 'localtime'),
     blocked_by=json_insert(blocked_by, '$[#]', $by) WHERE id=$id;"
   log_activity "task_blocked" "task" "$id" "by #$by"
   echo -e "${R}✗ #$id blocked by #$by${N}"
@@ -171,7 +171,7 @@ cmd_inbox() {
     substr(created_at,1,16) AS at
     FROM messages WHERE $where ORDER BY created_at DESC LIMIT 20;"
   # Auto-mark as read
-  sql "UPDATE messages SET read_at=datetime('now') WHERE to_agent='$AGENT' AND read_at IS NULL;"
+  sql "UPDATE messages SET read_at=datetime('now', 'localtime') WHERE to_agent='$AGENT' AND read_at IS NULL;"
 }
 
 cmd_fleet() {
