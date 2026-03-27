@@ -50,10 +50,18 @@ mc board
 
 ### Messages
 ```
-mc msg <agent> "body" [--task <id>] [--type TYPE]
+mc msg <agent> "body" [--task <id>] [--type TYPE] [--push]
 mc broadcast "body"
 mc inbox [--unread]
+mc push-status
 ```
+
+### Push Notifications
+For urgent messages that can't wait for heartbeat polling:
+```
+mc msg <agent> "Urgent!" --push
+```
+Requires: `agent-channels.conf` with Discord user IDs and `MC_DISCORD_BOT_TOKEN` set.
 
 ### Fleet
 ```

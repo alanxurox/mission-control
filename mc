@@ -6,12 +6,18 @@ set -euo pipefail
 DB="${MC_DB:-$HOME/.openclaw/mission-control.db}"
 AGENT="${MC_AGENT:-$(whoami)}"
 SCHEMA_DIR="$(cd "$(dirname "$0")" && pwd)"
+LIB_DIR="${MC_LIB_DIR:-$SCHEMA_DIR/lib}"
 CHANNELS_CONF="${MC_CHANNELS_CONF:-$SCHEMA_DIR/agent-channels.conf}"
 HOOKS_DIR="${MC_HOOKS_DIR:-$SCHEMA_DIR/hooks/message-received}"
 
 # Push notification settings
 PUSH_ENABLED="${MC_PUSH_ENABLED:-false}"
 DISCORD_BOT_TOKEN="${MC_DISCORD_BOT_TOKEN:-}"
+
+# Load Discord API library if available
+if [[ -f "$LIB_DIR/discord-api.sh" ]]; then
+    source "$LIB_DIR/discord-api.sh"
+fi
 
 # Colors
 R='\033[0;31m' G='\033[0;32m' Y='\033[1;33m' C='\033[0;36m' B='\033[1m' N='\033[0m'
@@ -20,7 +26,7 @@ sql() { sqlite3 -batch -separator '|' "$DB" "$1"; }
 sql_col() { sqlite3 -batch -header -column "$DB" "$1"; }
 log_activity() { sql "INSERT INTO activity(agent,action,target_type,target_id,detail) VALUES('$AGENT','$1','$2',$3,'$4');"; }
 
-# Get Discord handle for an agent from channels config
+# Get Discord handle for an agent from channels config (backwards compatibility)
 get_discord_handle() {
     local agent="$1"
     grep "^${agent}|" "$CHANNELS_CONF" 2>/dev/null | cut -d'|' -f2 || echo ""
@@ -28,7 +34,7 @@ get_discord_handle() {
 
 # Send Discord DM to an agent using the Discord API
 send_discord_dm() {
-    local handle="$1"
+    local user_id="$1"
     local sender="$2"
     local body="$3"
     
@@ -36,13 +42,13 @@ send_discord_dm() {
         return 1
     fi
     
-    # Remove @ prefix if present
-    handle="${handle#@}"
+    if [[ -z "$user_id" ]]; then
+        return 1
+    fi
     
-    # This would use Discord API to send DM
-    # For now, we log it - actual implementation requires Discord API setup
-    echo "[DISCORD DM] → @$handle: $body"
-    return 0
+    local formatted_msg="**$sender** sent you a message:\n\n$body"
+    discord-send-dm "$user_id" "$formatted_msg" "Mission Control"
+    return $?
 }
 
 # Dispatch push notifications to all configured channels
@@ -54,11 +60,12 @@ dispatch_push() {
     # Skip if push is disabled
     [[ "$PUSH_ENABLED" != "true" ]] && return 0
     
-    # Get the channel/handle for this agent
-    local handle
-    handle=$(get_discord_handle "$to_agent")
+    # Get the user ID for this agent from config
+    # Config format: agent_name|discord_user_id|description
+    local user_id
+    user_id=$(grep "^${to_agent}|" "$CHANNELS_CONF" 2>/dev/null | cut -d'|' -f2)
     
-    [[ -z "$handle" ]] && return 0
+    [[ -z "$user_id" ]] && return 0
     
     # Export for hook scripts
     export MC_EVENT_TYPE="message_received"
@@ -67,16 +74,16 @@ dispatch_push() {
     export MC_BODY="$body"
     export MC_TIMESTAMP="$(date -Iseconds)"
     
-    # Call hook scripts
+    # Call hook scripts (async)
     if [[ -d "$HOOKS_DIR" ]]; then
         for hook in "$HOOKS_DIR"/*; do
-            [[ -x "$hook" ]] && "$hook" &
+            [[ -x "$hook" && "$hook" != *.sample ]] && "$hook" &
         done
     fi
     
     # If Discord bot token is available, send direct DM
     if [[ -n "$DISCORD_BOT_TOKEN" && "$push_mode" != "hook" ]]; then
-        send_discord_dm "$handle" "$AGENT" "$body"
+        send_discord_dm "$user_id" "$AGENT" "$body"
     fi
 }
 
@@ -296,10 +303,12 @@ cmd_push_status() {
   echo ""
   echo -e "${C}Configured agents:${N}"
   if [[ -f "$CHANNELS_CONF" ]]; then
-    while IFS='|' read -r agent handle desc; do
+    while IFS='|' read -r agent user_id desc; do
       [[ "$agent" =~ ^# ]] && continue
       [[ -z "$agent" ]] && continue
-      echo -e "  ${G}$agent${N} → @$handle ($desc)"
+      # Mask user ID for display
+      local masked_id="${user_id:0:4}...${user_id: -4}"
+      echo -e "  ${G}$agent${N} → $masked_id ($desc)"
     done < "$CHANNELS_CONF"
   else
     echo -e "  ${Y}No channels.conf found${N}"

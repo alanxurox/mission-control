@@ -1,2 +1,12 @@
 test.db*
 *.db
+*.db-journal
+*.db-wal
+*.db-shm
+
+# Agent-specific configuration (contains sensitive Discord user IDs)
+# Use agent-channels.conf.example as template
+agent-channels.conf
+
+# Local state
+state/
