@@ -1,0 +1,21 @@
+# Example agent-channels.conf for Mission Control Direct Push
+# Copy this file to agent-channels.conf and fill in your Discord user IDs
+#
+# Format: AGENT_NAME|DISCORD_USER_ID|DESCRIPTION
+#
+# To get a Discord user ID:
+#   1. Enable Developer Mode in Discord (User Settings > Advanced > Developer Mode)
+#   2. Right-click on a user > Copy User ID
+#
+# Note: User IDs are numeric and look like: 123456789012345678
+
+# Example entries (replace with your actual agents):
+# alice|123456789012345678|Team Lead
+# bob|987654321098765432|Developer
+# charlie|555555555555555555|Designer
+
+# Instructions:
+# 1. Copy this file: cp agent-channels.conf.example agent-channels.conf
+# 2. Edit agent-channels.conf with your actual Discord user IDs
+# 3. Set MC_DISCORD_BOT_TOKEN environment variable with your bot token
+# 4. Enable push with MC_PUSH_ENABLED=true or use --push flag

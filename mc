@@ -1,11 +1,23 @@
 #!/usr/bin/env bash
-# Mission Control v0.1 — Coordination layer for OpenClaw agent fleets
+# Mission Control v0.2 — Coordination layer for OpenClaw agent fleets
 # Zero dependencies beyond bash + sqlite3
 set -euo pipefail
 
 DB="${MC_DB:-$HOME/.openclaw/mission-control.db}"
 AGENT="${MC_AGENT:-$(whoami)}"
 SCHEMA_DIR="$(cd "$(dirname "$0")" && pwd)"
+LIB_DIR="${MC_LIB_DIR:-$SCHEMA_DIR/lib}"
+CHANNELS_CONF="${MC_CHANNELS_CONF:-$SCHEMA_DIR/agent-channels.conf}"
+HOOKS_DIR="${MC_HOOKS_DIR:-$SCHEMA_DIR/hooks/message-received}"
+
+# Push notification settings
+PUSH_ENABLED="${MC_PUSH_ENABLED:-false}"
+DISCORD_BOT_TOKEN="${MC_DISCORD_BOT_TOKEN:-}"
+
+# Load Discord API library if available
+if [[ -f "$LIB_DIR/discord-api.sh" ]]; then
+    source "$LIB_DIR/discord-api.sh"
+fi
 
 # Colors
 R='\033[0;31m' G='\033[0;32m' Y='\033[1;33m' C='\033[0;36m' B='\033[1m' N='\033[0m'
@@ -13,6 +25,67 @@ R='\033[0;31m' G='\033[0;32m' Y='\033[1;33m' C='\033[0;36m' B='\033[1m' N='\033[
 sql() { sqlite3 -batch -separator '|' "$DB" "$1"; }
 sql_col() { sqlite3 -batch -header -column "$DB" "$1"; }
 log_activity() { sql "INSERT INTO activity(agent,action,target_type,target_id,detail) VALUES('$AGENT','$1','$2',$3,'$4');"; }
+
+# Get Discord handle for an agent from channels config (backwards compatibility)
+get_discord_handle() {
+    local agent="$1"
+    grep "^${agent}|" "$CHANNELS_CONF" 2>/dev/null | cut -d'|' -f2 || echo ""
+}
+
+# Send Discord DM to an agent using the Discord API
+send_discord_dm() {
+    local user_id="$1"
+    local sender="$2"
+    local body="$3"
+    
+    if [[ -z "$DISCORD_BOT_TOKEN" ]]; then
+        return 1
+    fi
+    
+    if [[ -z "$user_id" ]]; then
+        return 1
+    fi
+    
+    local formatted_msg="**$sender** sent you a message:\n\n$body"
+    discord-send-dm "$user_id" "$formatted_msg" "Mission Control"
+    return $?
+}
+
+# Dispatch push notifications to all configured channels
+dispatch_push() {
+    local to_agent="$1"
+    local body="$2"
+    local push_mode="${3:-hook}"  # hook, discord, both
+    
+    # Skip if push is disabled
+    [[ "$PUSH_ENABLED" != "true" ]] && return 0
+    
+    # Get the user ID for this agent from config
+    # Config format: agent_name|discord_user_id|description
+    local user_id
+    user_id=$(grep "^${to_agent}|" "$CHANNELS_CONF" 2>/dev/null | cut -d'|' -f2)
+    
+    [[ -z "$user_id" ]] && return 0
+    
+    # Export for hook scripts
+    export MC_EVENT_TYPE="message_received"
+    export MC_FROM_AGENT="$AGENT"
+    export MC_TO_AGENT="$to_agent"
+    export MC_BODY="$body"
+    export MC_TIMESTAMP="$(date -Iseconds)"
+    
+    # Call hook scripts (async)
+    if [[ -d "$HOOKS_DIR" ]]; then
+        for hook in "$HOOKS_DIR"/*; do
+            [[ -x "$hook" && "$hook" != *.sample ]] && "$hook" &
+        done
+    fi
+    
+    # If Discord bot token is available, send direct DM
+    if [[ -n "$DISCORD_BOT_TOKEN" && "$push_mode" != "hook" ]]; then
+        send_discord_dm "$user_id" "$AGENT" "$body"
+    fi
+}
 
 cmd_init() {
   mkdir -p "$(dirname "$DB")"
@@ -146,14 +219,20 @@ cmd_board() {
 }
 
 cmd_msg() {
-  local to="${1:?Usage: mc msg <agent> \"body\" [--task id] [--type TYPE]}" body="${2:?}" task_id="NULL" msg_type="comment"
+  local to="${1:?Usage: mc msg <agent> \"body\" [--task id] [--type TYPE] [--push]}" body="${2:?}" task_id="NULL" msg_type="comment" do_push="false"
   shift 2
   while [[ $# -gt 0 ]]; do
-    case "$1" in --task) task_id="$2"; shift 2;; --type) msg_type="$2"; shift 2;; *) shift;; esac
+    case "$1" in --task) task_id="$2"; shift 2;; --type) msg_type="$2"; shift 2;; --push) do_push="true"; shift;; *) shift;; esac
   done
   sql "INSERT INTO messages(from_agent,to_agent,task_id,body,msg_type) VALUES('$AGENT','$to',$task_id,'$(echo "$body" | sed "s/'/''/g")','$msg_type');"
   log_activity "message_sent" "message" 0 "to:$to type:$msg_type"
   echo -e "${G}→ $to${N}: $body"
+  
+  # Dispatch push notification
+  if [[ "$do_push" == "true" ]] || [[ "$PUSH_ENABLED" == "true" ]]; then
+    dispatch_push "$to" "$body" "both"
+    echo -e "${C}   [push notification sent]${N}"
+  fi
 }
 
 cmd_broadcast() {
@@ -214,9 +293,31 @@ cmd_whoami() {
   echo -e "Role:  ${role:-unregistered}"
 }
 
+cmd_push_status() {
+  echo -e "${B}═══ PUSH STATUS ═══${N}"
+  echo ""
+  echo -e "Push enabled:    ${C}$PUSH_ENABLED${N}"
+  echo -e "Discord token:   ${C}${DISCORD_BOT_TOKEN:+set}${DISCORD_BOT_TOKEN:+ }${DISCORD_BOT_TOKEN:+$(echo "$DISCORD_BOT_TOKEN" | cut -c1-8)...}${DISCORD_BOT_TOKEN:-not set}${N}"
+  echo -e "Channels conf:  ${C}$CHANNELS_CONF${N}"
+  echo -e "Hooks dir:      ${C}$HOOKS_DIR${N}"
+  echo ""
+  echo -e "${C}Configured agents:${N}"
+  if [[ -f "$CHANNELS_CONF" ]]; then
+    while IFS='|' read -r agent user_id desc; do
+      [[ "$agent" =~ ^# ]] && continue
+      [[ -z "$agent" ]] && continue
+      # Mask user ID for display
+      local masked_id="${user_id:0:4}...${user_id: -4}"
+      echo -e "  ${G}$agent${N} → $masked_id ($desc)"
+    done < "$CHANNELS_CONF"
+  else
+    echo -e "  ${Y}No channels.conf found${N}"
+  fi
+}
+
 cmd_help() {
   cat <<'EOF'
-Mission Control v0.1 — Coordination for OpenClaw agent fleets
+Mission Control v0.2 — Coordination for OpenClaw agent fleets (with direct push support)
 
 USAGE: mc <command> [args]
 
@@ -230,7 +331,7 @@ TASKS:
   board                                                Kanban view
 
 MESSAGES:
-  msg <agent> "body" [--task id] [--type TYPE]         Send message
+  msg <agent> "body" [--task id] [--type TYPE] [--push] Send message (--push for direct notification)
   broadcast "body"                                     Message all
   inbox [--unread]                                     Read messages
 
@@ -269,23 +370,24 @@ case "${1:-help}" in
 esac
 
 case "${1:-help}" in
-  init)      cmd_init ;;
-  register)  shift; cmd_register "$@" ;;
-  checkin)   cmd_checkin ;;
-  add)       shift; cmd_add "$@" ;;
-  list)      shift; cmd_list "$@" ;;
-  claim)     shift; cmd_claim "$@" ;;
-  start)     shift; cmd_start "$@" ;;
-  done)      shift; cmd_done "$@" ;;
-  block)     shift; cmd_block "$@" ;;
-  board)     cmd_board ;;
-  msg)       shift; cmd_msg "$@" ;;
-  broadcast) shift; cmd_broadcast "$@" ;;
-  inbox)     shift; cmd_inbox "$@" ;;
-  fleet)     cmd_fleet ;;
-  feed)      shift; cmd_feed "$@" ;;
-  summary)   cmd_summary ;;
-  whoami)    cmd_whoami ;;
+  init)         cmd_init ;;
+  register)     shift; cmd_register "$@" ;;
+  checkin)      cmd_checkin ;;
+  add)          shift; cmd_add "$@" ;;
+  list)         shift; cmd_list "$@" ;;
+  claim)        shift; cmd_claim "$@" ;;
+  start)        shift; cmd_start "$@" ;;
+  done)         shift; cmd_done "$@" ;;
+  block)        shift; cmd_block "$@" ;;
+  board)        cmd_board ;;
+  msg)          shift; cmd_msg "$@" ;;
+  broadcast)    shift; cmd_broadcast "$@" ;;
+  inbox)        shift; cmd_inbox "$@" ;;
+  fleet)        cmd_fleet ;;
+  feed)         shift; cmd_feed "$@" ;;
+  summary)      cmd_summary ;;
+  whoami)       cmd_whoami ;;
+  push-status)  cmd_push_status ;;
   help|-h|--help) cmd_help ;;
-  *)         echo "Unknown: $1"; cmd_help ;;
+  *)            echo "Unknown: $1"; cmd_help ;;
 esac

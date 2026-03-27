@@ -118,12 +118,63 @@ After completing work, run: mc done <id> -m "what I did"
 └─────────────────────┘
 ```
 
+## Direct Push Notifications (v0.2)
+
+Agents normally check for new messages via heartbeat (every 30 min). For urgent communication, enable **direct push notifications**:
+
+```bash
+# Enable push globally for an agent
+export MC_PUSH_ENABLED=true
+
+# Or per-message with --push flag
+MC_AGENT=researcher mc msg writer "Urgent: need that draft NOW" --push
+```
+
+### Configuration
+
+1. **Agent channels** — Edit `agent-channels.conf` to map agent names to their notification handles:
+   ```
+   researcher|Taylor-VLD Alex|Research Lead
+   writer|Taylor-VLD Sam|Content Writer
+   ```
+
+2. **Discord bot token** (for direct DMs):
+   ```bash
+   export MC_DISCORD_BOT_TOKEN=your_bot_token_here
+   ```
+
+3. **Custom hooks** — Add executable scripts to `hooks/message-received/`:
+   ```bash
+   # hooks/message-received/my-webhook
+   #!/bin/bash
+   echo "NEW MESSAGE from $MC_FROM_AGENT to $MC_TO_AGENT: $MC_BODY"
+   curl -X POST -d "msg=$MC_BODY" https://your-webhook-endpoint.com
+   ```
+
+### How it works
+
+```
+Agent A → mc msg Agent B "Hi!" --push
+    ↓
+mc inserts message into DB
+    ↓
+mc triggers all hooks in hooks/message-received/
+    ↓
+If MC_DISCORD_BOT_TOKEN set → sends Discord DM to @AgentB
+    ↓
+Agent B gets instant notification!
+```
+
 ## Environment Variables
 
 | Var | Default | Description |
 |-----|---------|-------------|
 | `MC_AGENT` | `$USER` | Agent identity |
 | `MC_DB` | `~/.openclaw/mission-control.db` | Database path |
+| `MC_PUSH_ENABLED` | `false` | Enable push notifications globally |
+| `MC_DISCORD_BOT_TOKEN` | (none) | Discord bot token for DMs |
+| `MC_CHANNELS_CONF` | `./agent-channels.conf` | Path to channels config |
+| `MC_HOOKS_DIR` | `./hooks/message-received` | Path to hooks directory |
 
 ## License
 
