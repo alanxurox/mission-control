@@ -1,0 +1,39 @@
+#!/usr/bin/env bash
+# Sample Discord webhook handler for mission-control push notifications
+# This script receives message events and sends them to Discord
+
+# Usage: This script is called by mc when a message is sent
+# It expects the following environment variables:
+#   MC_PUSH_DISCORD_WEBHOOK_URL - Discord webhook URL for the agent's DM channel
+#   MC_EVENT_TYPE - Type of event (message_received)
+#   MC_FROM_AGENT - Sender agent name
+#   MC_TO_AGENT - Recipient agent name  
+#   MC_BODY - Message body
+
+# For sending DMs via Discord, you would use the Discord API with a bot token.
+# This is a simplified example using webhooks.
+
+WEBHOOK_URL="${MC_PUSH_DISCORD_WEBHOOK_URL:-}"
+
+if [[ -z "$WEBHOOK_URL" ]]; then
+    # No webhook configured, skip
+    exit 0
+fi
+
+# Format the Discord message
+DISCORD_PAYLOAD=$(cat <<EOF
+{
+  "content": "**${MC_FROM_AGENT}** sent you a message:\n\n${MC_BODY}",
+  "username": "Mission Control",
+  "avatar_url": "https://i.imgur.com/placeholder.png"
+}
+EOF
+)
+
+# Send to Discord via webhook
+curl -s -X POST \
+    -H "Content-Type: application/json" \
+    -d "$DISCORD_PAYLOAD" \
+    "$WEBHOOK_URL" > /dev/null 2>&1
+
+exit 0
